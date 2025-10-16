@@ -1,0 +1,151 @@
+// ==UserScript==
+// @name         IMDb Search Result Loader and Extractor
+// @namespace    http://tampermonkey.net/
+// @version      1.5
+// @description  Automatically loads all IMDb search results by clicking the "50 more" button and periodically updates the clipboard with all extracted titles and IDs.
+// @author       Gemini
+// @match        https://www.imdb.com/search/title/*
+// @grant        GM_setClipboard
+// @grant        window.setTimeout
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Flag to ensure the script only starts its main loop once
+    let isScriptRunning = false;
+
+    // --- Configuration ---
+    // Selector for the "50 more" button. Using aria-disabled as an extra check.
+    const LOAD_MORE_BUTTON_SELECTOR = 'button.ipc-see-more__button[aria-disabled="false"]';
+
+    // Selector for the main title links that contain the ID and the title text.
+    // UPDATED: Targeting the link wrapper class inside the common list item class for robustness.
+    const RESULT_LINK_SELECTOR = 'li.ipc-metadata-list-summary-item a.ipc-title-link-wrapper';
+
+    // Delay after clicking (in milliseconds) to allow new content to load before polling starts again.
+    const CLICK_DELAY_MS = 1200;
+
+    // Polling settings for robust checking
+    const MAX_POLLING_ATTEMPTS = 15; // Max check attempts (15 * 500ms = 7.5 seconds)
+    const POLLING_INTERVAL_MS = 500; // Check every 500ms
+
+    /**
+     * Extracts all current data from the fully loaded DOM and copies it to the clipboard.
+     * This function is called after every load event to provide periodic updates.
+     */
+    function extractAndCopyData() {
+        if (typeof GM_setClipboard !== 'function') {
+            console.error("IMDb Scraper Error: GM_setClipboard function is missing. Ensure the script is installed correctly in Tampermonkey/Greasemonkey and the @grant is enabled.");
+            return;
+        }
+
+        const titleLinks = document.querySelectorAll(RESULT_LINK_SELECTOR);
+        const extractedData = [];
+
+        console.log(`IMDb Scraper: Starting data extraction for ${titleLinks.length} titles and copying to clipboard.`);
+
+        if (titleLinks.length === 0) {
+             console.error("IMDb Scraper Error: RESULT_LINK_SELECTOR failed to find any title links. The structure may have changed.");
+        }
+
+        titleLinks.forEach(link => {
+            const href = link.href;
+            const rawTitle = link.innerText.trim();
+
+            console.log(`IMDb Scraper Debug: Raw text found: "${rawTitle}"`);
+
+            // 1. Extract the IMDB ID (tt followed by numbers) from the link href
+            const idMatch = href.match(/\/title\/(tt\d+)/);
+            const imdbId = idMatch ? idMatch[1] : null;
+
+            // 2. Clean the title: remove the leading rank number (e.g., "1. " or "50. ")
+            const cleanedTitle = rawTitle.replace(/^\s*\d+\.\s*/, '').trim();
+
+            if (imdbId && cleanedTitle) {
+                // Format the output string as requested: "Title ID" (no quotes)
+                const outputLine = `${cleanedTitle} ${imdbId}`;
+                extractedData.push(outputLine);
+            } else {
+                console.warn(`IMDb Scraper: Could not extract valid ID or Title from raw link text: "${rawTitle}"`);
+            }
+        });
+
+        // Combine all lines with a newline separator
+        const finalOutput = extractedData.join('\n');
+
+        if (finalOutput.length > 0) {
+            // Copy the final data (all results gathered so far) to the clipboard
+            GM_setClipboard(finalOutput, 'text');
+            console.log(`IMDb Scraper: Clipboard updated with ${extractedData.length} entries. Total characters: ${finalOutput.length}`);
+        } else {
+            // This should only happen if the result selector is wrong or the page has no data.
+            console.warn("IMDb Scraper: No data was successfully extracted during this periodic update. This might be normal if the search results list is empty.");
+        }
+    }
+
+
+    /**
+     * Polls the DOM for the "50 more" button and clicks it when found.
+     * This function calls itself recursively until the button is no longer found.
+     */
+    function pollAndLoad(attempts = 0) {
+        // Find the load more button
+        const button = document.querySelector(LOAD_MORE_BUTTON_SELECTOR);
+
+        if (button) {
+            // --- Button found, proceed with clicking ---
+            console.log("IMDb Scraper: Found '50 more' button. Clicking to load next batch...");
+            button.click();
+
+            // Extract and copy all data loaded *so far* immediately after the click
+            extractAndCopyData();
+
+            // Wait a fixed time for the new content to load, then restart polling loop
+            window.setTimeout(() => {
+                console.log(`IMDb Scraper: Delay complete. Restarting poll for next button...`);
+                pollAndLoad(0); // Reset attempts and restart the loop
+            }, CLICK_DELAY_MS);
+
+        } else if (attempts < MAX_POLLING_ATTEMPTS) {
+            // --- Button not found yet, but max attempts not reached. Wait and try again. ---
+            console.log(`IMDb Scraper: Button not visible yet (Attempt ${attempts + 1}/${MAX_POLLING_ATTEMPTS}). Polling in ${POLLING_INTERVAL_MS}ms...`);
+
+            // Try again after a short polling interval
+            window.setTimeout(() => {
+                pollAndLoad(attempts + 1);
+            }, POLLING_INTERVAL_MS);
+
+        } else {
+            // --- Max attempts reached, assume all content is loaded or button is gone permanently ---
+            console.log("IMDb Scraper: Max polling attempts reached or button is permanently gone. Running final extraction.");
+            // One last call to ensure the final batch is copied
+            extractAndCopyData();
+            console.log("IMDb Scraper: All results loaded and final data copied.");
+        }
+    }
+
+    /**
+     * Initiates the script execution.
+     */
+    function startScript() {
+        if (isScriptRunning) return;
+        isScriptRunning = true;
+
+        if (typeof GM_setClipboard !== 'function') {
+            console.error("IMDb Scraper CRITICAL: GM_setClipboard is not available. Please ensure this script is installed via a userscript manager (like Tampermonkey).");
+            return;
+        }
+
+        console.log("IMDb Scraper: Script starting (v1.5 - Selector refined & Debugging added)...");
+        // Start the continuous loading and extraction process
+        pollAndLoad(0);
+    }
+
+    // --- Main Execution ---
+    // Use a short delay to ensure the DOM is fully interactive after initial load
+    setTimeout(startScript, 500);
+
+
+})();
